@@ -5,6 +5,17 @@
 
 const { getGuildConfig } = require("./guildConfigService");
 const messages = require("../config/messages");
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const nestedValue of Object.values(value)) {
+    deepFreeze(nestedValue);
+  }
+  return Object.freeze(value);
+}
+
 const autoModerationFeatureDefaults = {
   enabled: false,
   maxWarnings: 3,
@@ -30,7 +41,7 @@ const antiSpamFeatureDefaults = {
   sendMessage: true,
 };
 
-const FEATURE_DEFAULTS = {
+const FEATURE_DEFAULTS = deepFreeze({
   autoModeration: autoModerationFeatureDefaults,
   antiSpam: antiSpamFeatureDefaults,
   messageLogs: { enabled: false, channelId: null, ignoreBots: true },
@@ -112,7 +123,133 @@ const FEATURE_DEFAULTS = {
     channelId: null,
     roleId: null,
   },
-};
+});
+
+const FEATURE_DIAGNOSTICS = deepFreeze({
+  autoModeration: {
+    guildPermissions: ["ModerateMembers"],
+    validateConfig: (value) =>
+      value.enabled === true &&
+      !String(value.bannedWordsPt || "").trim() &&
+      !String(value.bannedWordsEn || "").trim()
+        ? [
+            {
+              code: "missing_automod_rules",
+              details: { field: "bannedWordsEn" },
+            },
+          ]
+        : [],
+  },
+  antiSpam: { guildPermissions: ["ModerateMembers"] },
+  messageLogs: {
+    requiredFields: ["channelId"],
+    channelField: "channelId",
+    channelPermissions: ["ViewChannel", "SendMessages", "EmbedLinks"],
+  },
+  reactionRoles: {
+    requiredFields: ["channelId", "messageId", "entries"],
+    channelField: "channelId",
+    messageField: "messageId",
+    channelPermissions: [
+      "ViewChannel",
+      "SendMessages",
+      "EmbedLinks",
+      "AddReactions",
+      "ReadMessageHistory",
+    ],
+    guildPermissions: ["ManageRoles"],
+    roleHierarchy: true,
+  },
+  autoKick: {
+    requiredFields: ["infractionsToKick"],
+    guildPermissions: ["KickMembers"],
+  },
+  levels: {
+    requiredFields: ["announceChannelId"],
+    channelField: "announceChannelId",
+    channelPermissions: ["ViewChannel", "SendMessages", "EmbedLinks"],
+  },
+  starboard: {
+    requiredFields: ["channelId"],
+    channelField: "channelId",
+    channelPermissions: [
+      "ViewChannel",
+      "SendMessages",
+      "EmbedLinks",
+      "ReadMessageHistory",
+    ],
+  },
+  polls: {},
+  verification: {
+    requiredFields: ["channelId", "roleId"],
+    channelField: "channelId",
+    channelPermissions: [
+      "ViewChannel",
+      "SendMessages",
+      "EmbedLinks",
+      "ReadMessageHistory",
+    ],
+    guildPermissions: ["ManageRoles"],
+    roleHierarchy: true,
+  },
+  tickets: {
+    requiredFields: ["channelId"],
+    channelField: "channelId",
+    channelPermissions: [
+      "ViewChannel",
+      "SendMessages",
+      "CreatePrivateThreads",
+      "ManageThreads",
+      "SendMessagesInThreads",
+      "AddReactions",
+      "ReadMessageHistory",
+    ],
+  },
+  welcome: {
+    requiredFields: ["channelId"],
+    channelField: "channelId",
+    channelPermissions: ["ViewChannel", "SendMessages"],
+  },
+  goodbye: {
+    requiredFields: ["channelId"],
+    channelField: "channelId",
+    channelPermissions: ["ViewChannel", "SendMessages"],
+  },
+  serverStats: {
+    guildPermissions: ["ManageChannels"],
+    validateConfig: (value) =>
+      value.showMembers !== true &&
+      value.showJoins !== true &&
+      value.showLeaves !== true
+        ? [{ code: "missing_stats_metric" }]
+        : [],
+  },
+  memes: {
+    requiredFields: ["channelId", "intervalMinutes"],
+    channelField: "channelId",
+    channelPermissions: ["ViewChannel", "SendMessages", "EmbedLinks"],
+  },
+  twitch: {
+    requiredFields: ["streamerName", "channelId"],
+    channelField: "channelId",
+    channelPermissions: ["ViewChannel", "SendMessages", "EmbedLinks"],
+    validateConfig: () =>
+      !process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET
+        ? [{ code: "missing_twitch_credentials" }]
+        : [],
+  },
+});
+
+const FEATURE_DIAGNOSTIC_FIELD_ISSUES = deepFreeze({
+  channelId: "missing_channel",
+  announceChannelId: "missing_announce_channel",
+  roleId: "missing_role",
+  messageId: "missing_message",
+  entries: "missing_entries",
+  streamerName: "missing_streamer",
+  intervalMinutes: "missing_configuration",
+  infractionsToKick: "missing_configuration",
+});
 
 const DYNAMIC_TEXT_DEFAULTS = {
   verification: {
@@ -229,13 +366,30 @@ function normalizeLegacyDynamicText(name, field, value) {
   return acceptedDefaults.includes(trimmed) ? null : value;
 }
 
+function cloneFeatureValue(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return new Date(value.getTime());
+  if (typeof value.toObject === "function") {
+    return cloneFeatureValue(value.toObject());
+  }
+  if (Array.isArray(value)) return Array.from(value, cloneFeatureValue);
+
+  const out = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    out[key] = cloneFeatureValue(nestedValue);
+  }
+  return out;
+}
+
 function normalizeFeature(name, raw) {
   const def = FEATURE_DEFAULTS[name] || {};
-  const out = { ...def };
+  const out = structuredClone(def);
   if (raw && typeof raw === "object") {
     for (const key of Object.keys(def)) {
       if (raw[key] !== undefined && raw[key] !== null) {
-        out[key] = normalizeLegacyDynamicText(name, key, raw[key]);
+        out[key] = cloneFeatureValue(
+          normalizeLegacyDynamicText(name, key, raw[key]),
+        );
       }
     }
   }
@@ -264,6 +418,8 @@ async function getFeature(guildId, name) {
 
 module.exports = {
   FEATURE_DEFAULTS,
+  FEATURE_DIAGNOSTICS,
+  FEATURE_DIAGNOSTIC_FIELD_ISSUES,
   normalizeFeature,
   normalizeFeatures,
   getFeatures,

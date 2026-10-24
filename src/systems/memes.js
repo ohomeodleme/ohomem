@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 const { getFeature } = require("./featuresService");
+const { isGuildChannel } = require("../utils/guildChannel");
 
 const MEME_API_URL = "https://meme-api.com/gimme/wholesomememes";
 const FETCH_TIMEOUT_MS = 10_000;
@@ -125,7 +126,10 @@ async function checkGuild(client, guild) {
     const channel = await client.channels
       .fetch(config.channelId)
       .catch(() => null);
-    if (!channel || typeof channel.send !== "function")
+    if (
+      !isGuildChannel(channel, guild.id) ||
+      typeof channel.send !== "function"
+    )
       throw new Error(
         "Configured channel is unavailable or cannot send messages",
       );

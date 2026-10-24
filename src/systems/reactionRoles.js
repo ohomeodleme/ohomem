@@ -31,13 +31,14 @@ function emojiMatches(configured, reactionEmoji) {
   const rIdentifier =
     reactionEmoji.identifier || (rName && rId ? `${rName}:${rId}` : null);
 
+  const custom = customEmojiParts(raw);
+  if (custom) {
+    return custom.id === rId || rIdentifier === `${custom.name}:${custom.id}`;
+  }
+
   const candidates = [raw];
   if (raw.length > 2 && raw.startsWith(":") && raw.endsWith(":")) {
     candidates.push(raw.slice(1, -1));
-  }
-  const custom = customEmojiParts(raw);
-  if (custom) {
-    candidates.push(custom.name, custom.id, `${custom.name}:${custom.id}`);
   }
 
   for (const c of candidates) {
@@ -47,6 +48,17 @@ function emojiMatches(configured, reactionEmoji) {
     if (rIdentifier && c === rIdentifier) return true;
   }
   return false;
+}
+
+function matchesConfiguredMessage(config, message) {
+  if (!config || !message) return false;
+  if (config.messageId) {
+    return (
+      message.id === config.messageId &&
+      (!config.channelId || message.channelId === config.channelId)
+    );
+  }
+  return Boolean(config.channelId && message.channelId === config.channelId);
 }
 
 /**
@@ -101,6 +113,7 @@ function toReactable(configured) {
 
 module.exports = {
   emojiMatches,
+  matchesConfiguredMessage,
   toReactable,
   customEmojiParts,
   resolveShortcodes,

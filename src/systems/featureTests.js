@@ -14,11 +14,17 @@ const {
 const { buildMemberMessage } = require("./welcomeMessages");
 const { getGuildLang, tGuild } = require("./i18n");
 const { getFeatureText, applyTemplate } = require("./featureText");
+const { isGuildChannel } = require("../utils/guildChannel");
 
-async function fetchSendable(client, channelId) {
+async function fetchSendable(client, guild, channelId) {
   if (!channelId) return null;
   const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel || typeof channel.send !== "function") return null;
+  if (
+    !isGuildChannel(channel, guild && guild.id) ||
+    typeof channel.send !== "function"
+  ) {
+    return null;
+  }
   return channel;
 }
 
@@ -56,7 +62,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
   switch (feature) {
     case "welcome":
     case "goodbye": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const lang = await getGuildLang(guild.id);
       await channel.send(
@@ -82,7 +88,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "memes": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const { sendMeme } = require("./memes");
       await sendMeme(channel);
@@ -90,7 +96,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "twitch": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       if (!c.streamerName)
         return { ok: false, error: "TWITCH_STREAMER_INVALID" };
@@ -107,7 +113,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "messageLogs": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const embed = new EmbedBuilder()
         .setTitle("Teste — registo de mensagens")
@@ -118,7 +124,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "reactionRoles": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const entries = Array.isArray(c.entries) ? c.entries : [];
       if (!entries.length) return { ok: false, error: "ENTRIES_REQUIRED" };
@@ -163,7 +169,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "levels": {
-      const channel = await fetchSendable(client, c.announceChannelId);
+      const channel = await fetchSendable(client, guild, c.announceChannelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       await channel.send({
         content: "🎉 Teste — um membro subiu para o nível 2!",
@@ -172,7 +178,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "starboard": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const embed = new EmbedBuilder()
         .setDescription("⭐ (teste) — entrada de starboard de exemplo")
@@ -182,7 +188,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "verification": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel || !c.roleId)
         return { ok: false, error: "CHANNEL_ROLE_REQUIRED" };
       const lang = await getGuildLang(guild.id);
@@ -220,7 +226,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "tickets": {
-      const channel = await fetchSendable(client, c.channelId);
+      const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const lang = await getGuildLang(guild.id);
       const title = await getFeatureText({

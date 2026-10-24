@@ -15,6 +15,17 @@ const { getFeatureText, applyTemplate } = require("./featureText");
 const recentTicketOpens = new Map();
 const RECENT_OPEN_WINDOW_MS = 5000;
 
+function pruneRecentOpenCache(cache, now, maxAgeMs) {
+  for (const [key, timestamp] of cache.entries()) {
+    if (now - timestamp > maxAgeMs) cache.delete(key);
+  }
+}
+
+const recentOpenCleanupTimer = setInterval(() => {
+  pruneRecentOpenCache(recentTicketOpens, Date.now(), RECENT_OPEN_WINDOW_MS);
+}, RECENT_OPEN_WINDOW_MS);
+recentOpenCleanupTimer.unref?.();
+
 function isRecentOpen(key) {
   const ts = recentTicketOpens.get(key);
   if (!ts) return false;
@@ -80,6 +91,38 @@ async function getTicketSettings(guildId) {
       closeEmoji: CLOSE_EMOJI,
     }
   );
+}
+
+async function cleanupTicketThread(thread, reason) {
+  try {
+    await thread.setArchived(true, reason);
+    return true;
+  } catch {
+    try {
+      await thread.delete(reason);
+      return true;
+    } catch (cleanupError) {
+      console.error(
+        "[ticketThreads] Failed to clean up ticket thread:",
+        cleanupError?.message || cleanupError,
+      );
+      return false;
+    }
+  }
+}
+
+async function addTicketMember(thread, userId) {
+  try {
+    await thread.members.add(userId);
+    return true;
+  } catch (err) {
+    console.warn(
+      "[ticketThreads] Failed to add ticket opener to thread:",
+      err?.message || err,
+    );
+    await cleanupTicketThread(thread, "Failed to add ticket opener");
+    return false;
+  }
 }
 
 /**
@@ -173,7 +216,7 @@ async function handleTicketOpen(reaction, user) {
       });
 
       // Adicionar o utilizador que abriu o ticket
-      await thread.members.add(user.id).catch(() => {});
+      if (!(await addTicketMember(thread, user.id))) return false;
 
       // Persistir ticket (para dashboard e replies)
       // We retry a few times in case of a rare race on ticketNumber.
@@ -197,15 +240,16 @@ async function handleTicketOpen(reaction, user) {
             err &&
             (err.code === 11000 ||
               String(err.message || "").includes("E11000"));
-          if (!isDup) throw err;
+          if (!isDup) {
+            await cleanupTicketThread(thread, "Failed to persist ticket");
+            throw err;
+          }
 
           // If it's a duplicate open-ticket for the same user, just archive the thread.
           const msg = String(err.message || "");
           const isDupOpenTicket = msg.includes("guildId_1_userId_1_status_1");
           if (isDupOpenTicket) {
-            try {
-              await thread.setArchived(true, "Duplicate open ticket");
-            } catch {}
+            await cleanupTicketThread(thread, "Duplicate open ticket");
             return false;
           }
 
@@ -220,9 +264,7 @@ async function handleTicketOpen(reaction, user) {
       }
 
       if (!ticketDoc) {
-        try {
-          await thread.setArchived(true, "Failed to create ticket");
-        } catch {}
+        await cleanupTicketThread(thread, "Failed to create ticket");
         return false;
       }
 
@@ -432,6 +474,9 @@ async function handleTicketClose(reaction, user) {
 module.exports = {
   handleTicketOpen,
   handleTicketClose,
+  addTicketMember,
+  cleanupTicketThread,
+  _internals: { pruneRecentOpenCache },
   OPEN_EMOJI,
   CLOSE_EMOJI,
 };

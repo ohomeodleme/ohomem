@@ -1132,6 +1132,9 @@
     missing_message: function (params) {
       return t("features_diagnosis_issue_missing_message", params);
     },
+    message_unavailable: function () {
+      return t("features_diagnosis_issue_message_unavailable");
+    },
     missing_entries: function (params) {
       return t("features_diagnosis_issue_missing_entries", params);
     },
@@ -1203,6 +1206,9 @@
     },
     CreatePrivateThreads: function () {
       return t("features_permission_CreatePrivateThreads");
+    },
+    ManageThreads: function () {
+      return t("features_permission_ManageThreads");
     },
     SendMessagesInThreads: function () {
       return t("features_permission_SendMessagesInThreads");
@@ -2086,6 +2092,69 @@
     return out;
   }
 
+  function applySavedFeatureValue(key, value) {
+    var feature = FEATURES.filter(function (item) {
+      return item.key === key;
+    })[0];
+    var card = cardFor(key);
+    if (!feature || !card || !value) return;
+
+    var enabledEl = card.querySelector('[data-role="enabled"]');
+    if (enabledEl) enabledEl.checked = value.enabled === true;
+
+    (feature.fields || [])
+      .concat(feature.advancedFields || [])
+      .forEach(function (field) {
+        if (field.type === "publish" || field.type === "simulation") return;
+
+        if (field.type === "entries") {
+          var entriesBox = card.querySelector('[data-role="entries"]');
+          if (!entriesBox) return;
+          while (entriesBox.firstChild) {
+            entriesBox.removeChild(entriesBox.firstChild);
+          }
+          (Array.isArray(value.entries) ? value.entries : []).forEach(
+            function (entry) {
+              var wrapper = document.createElement("div");
+              wrapper.innerHTML = entryRowHtml(entry);
+              if (wrapper.firstChild)
+                entriesBox.appendChild(wrapper.firstChild);
+            },
+          );
+          return;
+        }
+
+        var element = card.querySelector('[data-field="' + field.name + '"]');
+        if (!element) return;
+
+        if (field.type === "bool") {
+          element.checked = value[field.name] === true;
+        } else if (
+          field.type === "multiRole" ||
+          field.type === "multiChannel"
+        ) {
+          var selected = new Set(
+            (Array.isArray(value[field.name]) ? value[field.name] : []).map(
+              String,
+            ),
+          );
+          Array.prototype.forEach.call(
+            element.options || [],
+            function (option) {
+              option.selected = selected.has(String(option.value));
+            },
+          );
+        } else {
+          element.value =
+            value[field.name] == null ? "" : String(value[field.name]);
+        }
+      });
+
+    var previewBox = card.querySelector('[data-role="preview"]');
+    if (previewBox) renderEmbedPreview(card, feature, previewBox);
+    updateMessageIdLabel(key);
+  }
+
   // Presets only populate the draft. Saving and enabling remain explicit.
   function applyPreset(key, presetId, button) {
     var feature = FEATURES.filter(function (f) {
@@ -2198,6 +2267,7 @@
       if (!res || res.ok === false)
         throw new Error((res && res.error) || "ERROR");
       current[key] = res && res.value ? res.value : value;
+      applySavedFeatureValue(key, current[key]);
       configuredFeatures[key] = true;
       card.setAttribute("data-dirty", "false");
       updateConfigState(card);
@@ -2206,8 +2276,6 @@
         if (statusEl) statusEl.textContent = "";
         notify(t("features_saved"), { type: "success" });
       }
-      if (value && Object.prototype.hasOwnProperty.call(value, "messageId"))
-        updateMessageIdLabel(key);
       return true;
     } catch (err) {
       console.error("Feature save error", err);

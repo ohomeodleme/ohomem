@@ -3,7 +3,10 @@
 // Remove cargos por reação e atualiza o starboard quando uma reação é retirada.
 
 const { getFeature } = require("../systems/featuresService");
-const { emojiMatches } = require("../systems/reactionRoles");
+const {
+  emojiMatches,
+  matchesConfiguredMessage,
+} = require("../systems/reactionRoles");
 
 let starboard = null;
 try {
@@ -26,9 +29,7 @@ async function handleReactionRolesRemove(reaction, user) {
   const cfg = await getFeature(guild.id, "reactionRoles");
   if (cfg?.enabled !== true) return;
 
-  const matchesMessage = cfg.messageId && message.id === cfg.messageId;
-  const matchesChannel = cfg.channelId && message.channelId === cfg.channelId;
-  if (!matchesMessage && !matchesChannel) return;
+  if (!matchesConfiguredMessage(cfg, message)) return;
 
   const entries = Array.isArray(cfg.entries) ? cfg.entries : [];
   if (!entries.length) return;

@@ -19,6 +19,52 @@ test("antiSpam feature test only returns effective settings without side effects
   eq(result.data.muteDurationMinutes, 8);
 });
 
+test("feature test refuses to send to a channel from another guild", async () => {
+  let sends = 0;
+  const result = await runFeatureTest({
+    client: {
+      channels: {
+        fetch: async () => ({
+          guildId: "guild-2",
+          send: async () => {
+            sends += 1;
+          },
+        }),
+      },
+    },
+    guild: { id: "guild-1", name: "Guild 1" },
+    feature: "welcome",
+    config: { channelId: "channel-2" },
+  });
+
+  eq(result.ok, false);
+  eq(result.error, "CHANNEL_REQUIRED");
+  eq(sends, 0);
+});
+
+test("feature test does not send a welcome preview across guilds", async () => {
+  let sent = false;
+  const result = await runFeatureTest({
+    client: {
+      channels: {
+        fetch: async () => ({
+          guildId: "guild-2",
+          send: async () => {
+            sent = true;
+          },
+        }),
+      },
+    },
+    guild: { id: "guild-1", name: "Guild 1" },
+    feature: "welcome",
+    config: { channelId: "channel-2" },
+  });
+
+  eq(result.ok, false);
+  eq(result.error, "CHANNEL_REQUIRED");
+  eq(sent, false);
+});
+
 test("autoModeration simulation reports a match without Discord side effects", async () => {
   const result = await runFeatureTest({
     guild: { id: "guild-simulation" },

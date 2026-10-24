@@ -4,6 +4,11 @@ const {
   registerFeaturesRoutes,
 } = require("../../src/dashboard/routes/features");
 const { FEATURE_DEFAULTS } = require("../../src/systems/featuresService");
+const GuildConfigModel = require("../../src/database/models/GuildConfig");
+const {
+  getGuildConfig,
+  invalidateGuildConfig,
+} = require("../../src/systems/guildConfigService");
 const { startApp, stopApp, passthrough, sanitizeId } = require("./_helpers");
 
 test("feature updates are recorded without including custom message content", async () => {
@@ -48,6 +53,60 @@ test("feature updates are recorded without including custom message content", as
   }
 });
 
+test("feature saves invalidate cached config even if audit recording fails", async () => {
+  const guildId = "123456789012345678";
+  const originalFindOne = GuildConfigModel.findOne;
+  let storedConfig = {
+    guildId,
+    features: { antiSpam: { enabled: false } },
+  };
+  GuildConfigModel.findOne = () => ({ lean: async () => storedConfig });
+  invalidateGuildConfig(guildId);
+
+  try {
+    await getGuildConfig(guildId);
+    const app = await startApp(registerFeaturesRoutes, {
+      requireDashboardAuth: passthrough,
+      requirePerm: () => passthrough,
+      requireGuildAccess: () => passthrough,
+      sanitizeId,
+      GuildConfig: {
+        findOneAndUpdate() {
+          storedConfig = {
+            guildId,
+            features: { antiSpam: { enabled: true } },
+          };
+          return { lean: async () => ({}) };
+        },
+      },
+      recordAudit: async () => {
+        throw new Error("audit unavailable");
+      },
+    });
+
+    try {
+      const response = await fetch(app.baseUrl + "/api/features", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          guildId,
+          feature: "antiSpam",
+          value: { enabled: true },
+        }),
+      });
+
+      assert.equal(response.status, 500);
+      const refreshed = await getGuildConfig(guildId);
+      assert.equal(refreshed.features.antiSpam.enabled, true);
+    } finally {
+      await stopApp(app.server);
+    }
+  } finally {
+    GuildConfigModel.findOne = originalFindOne;
+    invalidateGuildConfig(guildId);
+  }
+});
+
 test("feature loading distinguishes saved features from normalized defaults", async () => {
   const guildId = "123456789012345678";
   const app = await startApp(registerFeaturesRoutes, {
@@ -85,6 +144,41 @@ test("feature loading distinguishes saved features from normalized defaults", as
       result.features.antiSpam.intervalSeconds,
       FEATURE_DEFAULTS.antiSpam.intervalSeconds,
     );
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("feature loading returns defaults without creating a GuildConfig", async () => {
+  let createCalls = 0;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    sanitizeId,
+    GuildConfig: {
+      findOne: () => ({ lean: async () => null }),
+      create: async () => {
+        createCalls += 1;
+        throw new Error("GET should not create a GuildConfig");
+      },
+    },
+  });
+
+  try {
+    const response = await fetch(
+      app.baseUrl + "/api/features?guildId=123456789012345678",
+    );
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(result.features.antiSpam.enabled, false);
+    assert.equal(
+      result.features.antiSpam.intervalSeconds,
+      FEATURE_DEFAULTS.antiSpam.intervalSeconds,
+    );
+    assert.equal(result.configuredFeatures.antiSpam, false);
+    assert.equal(createCalls, 0);
   } finally {
     await stopApp(app.server);
   }
@@ -142,6 +236,68 @@ test("antiSpam feature updates are clamped and saved per server", async () => {
     });
     assert.equal(update.filter.guildId, "123456789012345678");
     assert.deepEqual(update.value.$addToSet.featuresConfigured, "antiSpam");
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("Starboard shortcode saves as a canonical custom emoji", async () => {
+  let update;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    sanitizeId,
+    GuildConfig: {
+      findOneAndUpdate(_filter, value) {
+        update = value;
+        return { lean: async () => ({}) };
+      },
+    },
+    getClient: () => ({
+      channels: {
+        fetch: async (id) => ({
+          id,
+          guildId: "123456789012345678",
+        }),
+      },
+      guilds: {
+        fetch: async () => ({
+          emojis: {
+            cache: {
+              find: (predicate) => {
+                const emoji = { name: "sparkle", id: "345678901234567890" };
+                return predicate(emoji) ? emoji : null;
+              },
+            },
+          },
+        }),
+      },
+    }),
+  });
+
+  try {
+    const response = await fetch(app.baseUrl + "/api/features", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        guildId: "123456789012345678",
+        feature: "starboard",
+        value: {
+          enabled: true,
+          channelId: "234567890123456789",
+          emoji: ":sparkle:",
+        },
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(result.value.emoji, "<:sparkle:345678901234567890>");
+    assert.equal(
+      update.$set["features.starboard"].emoji,
+      "<:sparkle:345678901234567890>",
+    );
   } finally {
     await stopApp(app.server);
   }
@@ -206,7 +362,14 @@ test("AutoMod rules are deduplicated and bounded before persistence", async () =
         return { lean: async () => ({}) };
       },
     },
-    getClient: () => null,
+    getClient: () => ({
+      channels: {
+        fetch: async (id) => ({
+          id,
+          guildId: "123456789012345678",
+        }),
+      },
+    }),
   });
 
   try {
@@ -258,7 +421,11 @@ test("memes and Twitch feature updates are normalized before persistence", async
         return { lean: async () => ({}) };
       },
     },
-    getClient: () => null,
+    getClient: () => ({
+      channels: {
+        fetch: async (id) => ({ id, guildId: "123456789012345678" }),
+      },
+    }),
   });
 
   async function updateFeature(feature, value) {
@@ -303,9 +470,54 @@ test("memes and Twitch feature updates are normalized before persistence", async
   }
 });
 
+test("feature saves reject channel IDs owned by another guild", async () => {
+  let writes = 0;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    sanitizeId,
+    GuildConfig: {
+      findOneAndUpdate() {
+        writes += 1;
+        return { lean: async () => ({}) };
+      },
+    },
+    getClient: () => ({
+      channels: {
+        fetch: async (id) => ({ id, guildId: "999999999999999999" }),
+      },
+    }),
+  });
+
+  try {
+    const response = await fetch(app.baseUrl + "/api/features", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        guildId: "123456789012345678",
+        feature: "welcome",
+        value: {
+          enabled: true,
+          channelId: "234567890123456789",
+        },
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(result.error, "CHANNEL_NOT_IN_GUILD");
+    assert.equal(writes, 0);
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
 test("feature diagnostics report missing setup and Discord permissions", async () => {
   const originalTwitchClientId = process.env.TWITCH_CLIENT_ID;
   const originalTwitchClientSecret = process.env.TWITCH_CLIENT_SECRET;
+  let diagnoseRateLimitCalls = 0;
+  let featureReadRateLimitCalls = 0;
   delete process.env.TWITCH_CLIENT_ID;
   delete process.env.TWITCH_CLIENT_SECRET;
   const guildId = "123456789012345678";
@@ -327,6 +539,15 @@ test("feature diagnostics report missing setup and Discord permissions", async (
     requireDashboardAuth: passthrough,
     requirePerm: () => passthrough,
     requireGuildAccess: () => passthrough,
+    rateLimit: (options) => (req, res, next) => {
+      if (options.keyPrefix === "rl:features:diagnose:") {
+        diagnoseRateLimitCalls += 1;
+      }
+      if (options.keyPrefix === "rl:features:read:") {
+        featureReadRateLimitCalls += 1;
+      }
+      next();
+    },
     sanitizeId,
     GuildConfig: {
       findOne: () => ({
@@ -349,6 +570,13 @@ test("feature diagnostics report missing setup and Discord permissions", async (
   });
 
   try {
+    const featuresResponse = await fetch(
+      app.baseUrl + `/api/features?guildId=${guildId}`,
+    );
+    assert.equal(featuresResponse.status, 200);
+    assert.equal(featureReadRateLimitCalls, 1);
+    assert.equal(diagnoseRateLimitCalls, 0);
+
     const blockedResponse = await fetch(
       app.baseUrl + `/api/features/memes/diagnose?guildId=${guildId}`,
     );
@@ -385,6 +613,8 @@ test("feature diagnostics report missing setup and Discord permissions", async (
         (issue) => issue.code === "missing_automod_rules",
       ),
     );
+    assert.equal(diagnoseRateLimitCalls, 3);
+    assert.equal(featureReadRateLimitCalls, 1);
   } finally {
     await stopApp(app.server);
     if (originalTwitchClientId === undefined)
@@ -393,5 +623,268 @@ test("feature diagnostics report missing setup and Discord permissions", async (
     if (originalTwitchClientSecret === undefined)
       delete process.env.TWITCH_CLIENT_SECRET;
     else process.env.TWITCH_CLIENT_SECRET = originalTwitchClientSecret;
+  }
+});
+
+test("feature test actions are rate limited before running", async () => {
+  let testRateLimitOptions = null;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    rateLimit: (options) => {
+      if (options.keyPrefix !== "rl:features:test:") return passthrough;
+      testRateLimitOptions = options;
+      return (req, res) =>
+        res.status(429).json({ ok: false, error: "RATE_LIMITED" });
+    },
+    sanitizeId,
+    GuildConfig: {
+      findOne() {
+        throw new Error("rate limit should stop before loading config");
+      },
+    },
+  });
+
+  try {
+    const response = await fetch(app.baseUrl + "/api/features/welcome/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guildId: "123456789012345678" }),
+    });
+
+    assert.equal(response.status, 429);
+    assert.deepEqual(testRateLimitOptions, {
+      windowMs: 60_000,
+      max: 5,
+      keyPrefix: "rl:features:test:",
+    });
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("feature saves are rate limited before database or Discord work", async () => {
+  let saveRateLimitOptions = null;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    rateLimit: (options) => {
+      if (options.keyPrefix !== "rl:features:save:") return passthrough;
+      saveRateLimitOptions = options;
+      return (req, res) =>
+        res.status(429).json({ ok: false, error: "RATE_LIMITED" });
+    },
+    sanitizeId,
+    GuildConfig: {
+      findOneAndUpdate() {
+        throw new Error("rate limit should stop before saving config");
+      },
+    },
+    getClient() {
+      throw new Error("rate limit should stop before Discord provisioning");
+    },
+  });
+
+  try {
+    const response = await fetch(app.baseUrl + "/api/features", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        guildId: "123456789012345678",
+        feature: "serverStats",
+        value: { enabled: true },
+      }),
+    });
+
+    assert.equal(response.status, 429);
+    assert.deepEqual(saveRateLimitOptions, {
+      windowMs: 60_000,
+      max: 20,
+      keyPrefix: "rl:features:save:",
+    });
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("feature panel publishing is rate limited before Discord work", async () => {
+  let publishRateLimitOptions = null;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    rateLimit: (options) => {
+      if (options.keyPrefix !== "rl:features:publish:") return passthrough;
+      publishRateLimitOptions = options;
+      return (req, res) =>
+        res.status(429).json({ ok: false, error: "RATE_LIMITED" });
+    },
+    sanitizeId,
+    GuildConfig: {
+      findOne() {
+        throw new Error("rate limit should stop before loading config");
+      },
+    },
+    getClient() {
+      throw new Error("rate limit should stop before publishing");
+    },
+  });
+
+  try {
+    const response = await fetch(
+      app.baseUrl + "/api/features/verification/publish",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId: "123456789012345678" }),
+      },
+    );
+
+    assert.equal(response.status, 429);
+    assert.deepEqual(publishRateLimitOptions, {
+      windowMs: 60_000,
+      max: 5,
+      keyPrefix: "rl:features:publish:",
+    });
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("feature panel publishing edits the saved panel instead of duplicating it", async () => {
+  const guildId = "123456789012345678";
+  const channelId = "234567890123456789";
+  const messageId = "345678901234567890";
+  let sentMessages = 0;
+  let editedMessages = 0;
+  let fetchedMessageId = null;
+  let savedUpdate = null;
+  const existingMessage = {
+    id: messageId,
+    async edit() {
+      editedMessages += 1;
+      return existingMessage;
+    },
+  };
+  const channel = {
+    guildId,
+    messages: {
+      async fetch(id) {
+        fetchedMessageId = id;
+        return existingMessage;
+      },
+    },
+    async send() {
+      sentMessages += 1;
+      return { id: "456789012345678901" };
+    },
+  };
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    sanitizeId,
+    GuildConfig: {
+      findOne: () => ({
+        lean: async () => ({
+          features: {
+            verification: {
+              enabled: true,
+              roleId: "567890123456789012",
+              channelId,
+              messageId,
+              title: "Verification",
+              description: "Verify to get access.",
+              buttonLabel: "Verify",
+            },
+          },
+        }),
+      }),
+      findOneAndUpdate(_filter, update) {
+        savedUpdate = update;
+        return { lean: async () => ({}) };
+      },
+    },
+    getClient: () => ({ channels: { fetch: async () => channel } }),
+  });
+
+  try {
+    const response = await fetch(
+      app.baseUrl + "/api/features/verification/publish",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId }),
+      },
+    );
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(fetchedMessageId, messageId);
+    assert.equal(editedMessages, 1);
+    assert.equal(sentMessages, 0);
+    assert.equal(result.value.messageId, messageId);
+    assert.equal(
+      savedUpdate.$set["features.verification"].messageId,
+      messageId,
+    );
+  } finally {
+    await stopApp(app.server);
+  }
+});
+
+test("feature panel publishing refuses a channel from another guild", async () => {
+  let sends = 0;
+  const app = await startApp(registerFeaturesRoutes, {
+    requireDashboardAuth: passthrough,
+    requirePerm: () => passthrough,
+    requireGuildAccess: () => passthrough,
+    sanitizeId,
+    GuildConfig: {
+      findOne: () => ({
+        lean: async () => ({
+          features: {
+            verification: {
+              enabled: true,
+              roleId: "567890123456789012",
+              channelId: "234567890123456789",
+              title: "Verification",
+              description: "Verify to get access.",
+              buttonLabel: "Verify",
+            },
+          },
+        }),
+      }),
+    },
+    getClient: () => ({
+      channels: {
+        fetch: async () => ({
+          guildId: "999999999999999999",
+          send: async () => {
+            sends += 1;
+          },
+        }),
+      },
+    }),
+  });
+
+  try {
+    const response = await fetch(
+      app.baseUrl + "/api/features/verification/publish",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId: "123456789012345678" }),
+      },
+    );
+    const result = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(result.error, "CHANNEL_NOT_FOUND");
+    assert.equal(sends, 0);
+  } finally {
+    await stopApp(app.server);
   }
 });

@@ -998,6 +998,8 @@ window.OzarkLocales.pt = {
     "Seleciona um canal de anúncios.",
   features_diagnosis_issue_missing_role: "Seleciona um cargo.",
   features_diagnosis_issue_missing_message: "Define o ID da mensagem.",
+  features_diagnosis_issue_message_unavailable:
+    "A mensagem do painel não foi encontrada no canal selecionado. Publica o painel ou escolhe a mensagem correta.",
   features_diagnosis_issue_missing_entries:
     "Adiciona pelo menos um par de emoji e cargo.",
   features_diagnosis_issue_missing_streamer:
@@ -1033,6 +1035,7 @@ window.OzarkLocales.pt = {
   features_permission_KickMembers: "Expulsar membros",
   features_permission_ManageChannels: "Gerir canais",
   features_permission_CreatePrivateThreads: "Criar threads privadas",
+  features_permission_ManageThreads: "Gerir threads",
   features_permission_SendMessagesInThreads: "Enviar mensagens em threads",
   features_load_error: "Não foi possível carregar as funcionalidades.",
   features_saved: "Guardado.",

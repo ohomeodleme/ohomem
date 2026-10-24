@@ -971,6 +971,8 @@ window.OzarkLocales.en = {
     "Select an announcement channel.",
   features_diagnosis_issue_missing_role: "Select a role.",
   features_diagnosis_issue_missing_message: "Set the message ID.",
+  features_diagnosis_issue_message_unavailable:
+    "The configured panel message was not found in the selected channel. Publish the panel or choose the correct message.",
   features_diagnosis_issue_missing_entries:
     "Add at least one emoji and role pair.",
   features_diagnosis_issue_missing_streamer:
@@ -1006,6 +1008,7 @@ window.OzarkLocales.en = {
   features_permission_KickMembers: "Kick Members",
   features_permission_ManageChannels: "Manage Channels",
   features_permission_CreatePrivateThreads: "Create Private Threads",
+  features_permission_ManageThreads: "Manage Threads",
   features_permission_SendMessagesInThreads: "Send Messages in Threads",
   features_load_error: "Failed to load features.",
   features_saved: "Saved.",

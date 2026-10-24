@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 const { getFeature } = require("./featuresService");
+const { isGuildChannel } = require("../utils/guildChannel");
 const { getGuildLang } = require("./i18n");
 
 const TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token";
@@ -220,7 +221,10 @@ async function checkGuild(client, guild) {
   const channel = await client.channels
     .fetch(config.channelId)
     .catch(() => null);
-  if (!channel || typeof channel.send !== "function") {
+  if (
+    !isGuildChannel(channel, guild.id) ||
+    typeof channel.send !== "function"
+  ) {
     throw createServiceError(
       "TWITCH_CHANNEL_UNAVAILABLE",
       "Configured Discord channel is unavailable",

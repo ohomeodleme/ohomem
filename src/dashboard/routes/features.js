@@ -7,11 +7,14 @@
 const { invalidateGuildConfig } = require("../../systems/guildConfigService");
 const {
   FEATURE_DEFAULTS,
+  FEATURE_DIAGNOSTICS,
+  FEATURE_DIAGNOSTIC_FIELD_ISSUES,
   normalizeFeature,
   normalizeFeatures,
 } = require("../../systems/featuresService");
 const { getFeatureText, applyTemplate } = require("../../systems/featureText");
 const { getGuildLang } = require("../../systems/i18n");
+const { isGuildChannel } = require("../../utils/guildChannel");
 const { PermissionsBitField } = require("discord.js");
 
 const FEATURE_NAMES = Object.keys(FEATURE_DEFAULTS);
@@ -31,73 +34,11 @@ function hasLegacyFeatureConfig(name, value) {
   });
 }
 
-const REQUIRED_FEATURE_FIELDS = {
-  antiSpam: [],
-  autoKick: ["infractionsToKick"],
-  messageLogs: ["channelId"],
-  reactionRoles: ["channelId", "messageId", "entries"],
-  levels: ["announceChannelId"],
-  starboard: ["channelId"],
-  verification: ["channelId", "roleId"],
-  tickets: ["channelId"],
-  welcome: ["channelId"],
-  goodbye: ["channelId"],
-  memes: ["channelId", "intervalMinutes"],
-  twitch: ["streamerName", "channelId"],
-};
-const FEATURE_FIELD_ISSUES = {
-  channelId: "missing_channel",
-  announceChannelId: "missing_announce_channel",
-  roleId: "missing_role",
-  messageId: "missing_message",
-  entries: "missing_entries",
-  streamerName: "missing_streamer",
-  intervalMinutes: "missing_configuration",
-  infractionsToKick: "missing_configuration",
-};
-const FEATURE_CHANNEL_FIELDS = {
-  messageLogs: "channelId",
-  reactionRoles: "channelId",
-  levels: "announceChannelId",
-  starboard: "channelId",
-  verification: "channelId",
-  tickets: "channelId",
-  welcome: "channelId",
-  goodbye: "channelId",
-  memes: "channelId",
-  twitch: "channelId",
-};
-const CHANNEL_PERMISSIONS = {
-  messageLogs: ["ViewChannel", "SendMessages", "EmbedLinks"],
-  reactionRoles: [
-    "ViewChannel",
-    "SendMessages",
-    "EmbedLinks",
-    "AddReactions",
-    "ReadMessageHistory",
-  ],
-  levels: ["ViewChannel", "SendMessages"],
-  starboard: ["ViewChannel", "SendMessages", "EmbedLinks"],
-  verification: ["ViewChannel", "SendMessages", "EmbedLinks"],
-  tickets: [
-    "ViewChannel",
-    "SendMessages",
-    "CreatePrivateThreads",
-    "SendMessagesInThreads",
-    "AddReactions",
-    "ReadMessageHistory",
-  ],
-  welcome: ["ViewChannel", "SendMessages"],
-  goodbye: ["ViewChannel", "SendMessages"],
-  memes: ["ViewChannel", "SendMessages", "EmbedLinks"],
-  twitch: ["ViewChannel", "SendMessages", "EmbedLinks"],
-};
-
 function isEmptyFeatureValue(value) {
   return (
     value === null ||
     value === undefined ||
-    value === "" ||
+    (typeof value === "string" && value.trim() === "") ||
     (Array.isArray(value) && value.length === 0)
   );
 }
@@ -106,56 +47,34 @@ async function diagnoseFeature({ client, guild, feature, config }) {
   const issues = [];
   const addIssue = (code, details = {}) => issues.push({ code, ...details });
   const value = config || {};
+  const diagnostics = FEATURE_DIAGNOSTICS[feature] || {};
 
-  for (const field of REQUIRED_FEATURE_FIELDS[feature] || []) {
+  for (const field of diagnostics.requiredFields || []) {
     if (isEmptyFeatureValue(value[field])) {
-      addIssue(FEATURE_FIELD_ISSUES[field] || "missing_configuration", {
-        field,
-      });
+      addIssue(
+        FEATURE_DIAGNOSTIC_FIELD_ISSUES[field] || "missing_configuration",
+        {
+          field,
+        },
+      );
     }
   }
-  if (
-    feature === "autoModeration" &&
-    value.enabled === true &&
-    !String(value.bannedWordsPt || "").trim() &&
-    !String(value.bannedWordsEn || "").trim()
-  ) {
-    addIssue("missing_automod_rules", { field: "bannedWordsEn" });
-  }
-  if (
-    feature === "serverStats" &&
-    value.showMembers !== true &&
-    value.showJoins !== true &&
-    value.showLeaves !== true
-  ) {
-    addIssue("missing_stats_metric");
-  }
-  if (
-    feature === "twitch" &&
-    (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET)
-  ) {
-    addIssue("missing_twitch_credentials");
+  for (const issue of diagnostics.validateConfig?.(value) || []) {
+    addIssue(issue.code, issue.details);
   }
 
   let member = guild.members && guild.members.me;
-  const needsGuildPermissions =
-    {
-      autoKick: ["KickMembers"],
-      reactionRoles: ["ManageRoles"],
-      verification: ["ManageRoles"],
-      serverStats: ["ManageChannels"],
-    }[feature] || [];
+  const needsGuildPermissions = [...(diagnostics.guildPermissions || [])];
   if (feature === "verification" && Number(value.kickAfterMinutes) > 0) {
     needsGuildPermissions.push("KickMembers");
   }
-  const needsRoleHierarchy =
-    feature === "reactionRoles" || feature === "verification";
-  const channelField = FEATURE_CHANNEL_FIELDS[feature];
+  const needsRoleHierarchy = diagnostics.roleHierarchy === true;
+  const channelField = diagnostics.channelField;
   const channelId = channelField ? value[channelField] : null;
   const shouldInspectMember =
     needsGuildPermissions.length > 0 ||
     needsRoleHierarchy ||
-    (channelId && CHANNEL_PERMISSIONS[feature]);
+    (channelId && diagnostics.channelPermissions);
 
   if (
     shouldInspectMember &&
@@ -202,16 +121,17 @@ async function diagnoseFeature({ client, guild, feature, config }) {
     }
   }
 
-  if (channelId && CHANNEL_PERMISSIONS[feature]) {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel || channel.guildId !== guild.id) {
+  let inspectedChannel = null;
+  if (channelId && diagnostics.channelPermissions) {
+    inspectedChannel = await client.channels.fetch(channelId).catch(() => null);
+    if (!inspectedChannel || inspectedChannel.guildId !== guild.id) {
       addIssue("channel_unavailable", { field: channelField });
     } else if (member) {
-      const channelPermissions = channel.permissionsFor(member);
+      const channelPermissions = inspectedChannel.permissionsFor(member);
       if (!channelPermissions) {
         addIssue("channel_permissions_unavailable", { field: channelField });
       } else {
-        const requiredChannelPermissions = [...CHANNEL_PERMISSIONS[feature]];
+        const requiredChannelPermissions = [...diagnostics.channelPermissions];
         if (
           (feature === "welcome" || feature === "goodbye") &&
           value.embed === true
@@ -230,6 +150,22 @@ async function diagnoseFeature({ client, guild, feature, config }) {
       }
     }
   }
+  if (
+    inspectedChannel &&
+    diagnostics.messageField &&
+    value[diagnostics.messageField]
+  ) {
+    const messages = inspectedChannel.messages;
+    const message =
+      messages && typeof messages.fetch === "function"
+        ? await messages
+            .fetch(value[diagnostics.messageField])
+            .catch(() => null)
+        : null;
+    if (!message) {
+      addIssue("message_unavailable", { field: diagnostics.messageField });
+    }
+  }
 
   const hasPermissionIssue = issues.some((issue) =>
     [
@@ -242,8 +178,9 @@ async function diagnoseFeature({ client, guild, feature, config }) {
       "missing_twitch_credentials",
     ].includes(issue.code),
   );
-  const hasConfigIssue = issues.some((issue) =>
-    issue.code.startsWith("missing_"),
+  const hasConfigIssue = issues.some(
+    (issue) =>
+      issue.code.startsWith("missing_") || issue.code === "message_unavailable",
   );
   const status =
     value.enabled !== true
@@ -257,13 +194,18 @@ async function diagnoseFeature({ client, guild, feature, config }) {
   return { feature, status, issues, checkedAt: new Date().toISOString() };
 }
 
-function toBool(v) {
+function toBool(v, fallback = false) {
+  if (v === null || v === undefined) return fallback;
   return v === true || v === "true" || v === 1 || v === "1";
 }
 
 function toInt(v, fallback, min, max) {
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n)) return fallback;
+  if (typeof v !== "number" && typeof v !== "string") return fallback;
+  if (typeof v === "string" && !v.trim()) {
+    return fallback;
+  }
+  const n = Number(v);
+  if (!Number.isInteger(n)) return fallback;
   if (typeof min === "number" && n < min) return min;
   if (typeof max === "number" && n > max) return max;
   return n;
@@ -316,8 +258,21 @@ function formatPanelDate(lang, now) {
 // URL http(s) opcional (usada no banner das mensagens).
 function urlOrNull(v, max) {
   const s = typeof v === "string" ? v.trim() : "";
-  if (!s || !/^https?:\/\//i.test(s)) return null;
-  return s.slice(0, max);
+  if (!s || s.length > max) return null;
+  try {
+    const url = new URL(s);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      !url.hostname ||
+      url.username ||
+      url.password
+    ) {
+      return null;
+    }
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -339,8 +294,7 @@ function cleanFeatureValue(name, raw, sanitizeId) {
     case "autoModeration": {
       const defaults = FEATURE_DEFAULTS.autoModeration;
       return {
-        enabled:
-          src.enabled === undefined ? defaults.enabled : toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         maxWarnings: toInt(src.maxWarnings, defaults.maxWarnings, 1, 10),
         muteDurationMinutes: toInt(
           src.muteDurationMinutes,
@@ -370,8 +324,7 @@ function cleanFeatureValue(name, raw, sanitizeId) {
           ? NaN
           : Number(src.similarityThreshold);
       return {
-        enabled:
-          src.enabled === undefined ? defaults.enabled : toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         intervalSeconds: toInt(
           src.intervalSeconds,
           defaults.intervalSeconds,
@@ -391,10 +344,10 @@ function cleanFeatureValue(name, raw, sanitizeId) {
           0,
           3600,
         ),
-        softActionsEnabled:
-          src.softActionsEnabled === undefined
-            ? defaults.softActionsEnabled
-            : toBool(src.softActionsEnabled),
+        softActionsEnabled: toBool(
+          src.softActionsEnabled,
+          defaults.softActionsEnabled,
+        ),
         strikeWindowSeconds: toInt(
           src.strikeWindowSeconds,
           defaults.strikeWindowSeconds,
@@ -406,31 +359,29 @@ function cleanFeatureValue(name, raw, sanitizeId) {
         similarityThreshold: Number.isFinite(rawSimilarity)
           ? Math.min(1, Math.max(0.5, rawSimilarity))
           : defaults.similarityThreshold,
-        ignoreAttachments:
-          src.ignoreAttachments === undefined
-            ? defaults.ignoreAttachments
-            : toBool(src.ignoreAttachments),
-        bypassAdmins:
-          src.bypassAdmins === undefined
-            ? defaults.bypassAdmins
-            : toBool(src.bypassAdmins),
-        sendMessage:
-          src.sendMessage === undefined
-            ? defaults.sendMessage
-            : toBool(src.sendMessage),
+        ignoreAttachments: toBool(
+          src.ignoreAttachments,
+          defaults.ignoreAttachments,
+        ),
+        bypassAdmins: toBool(src.bypassAdmins, defaults.bypassAdmins),
+        sendMessage: toBool(src.sendMessage, defaults.sendMessage),
       };
     }
 
-    case "messageLogs":
+    case "messageLogs": {
+      const defaults = FEATURE_DEFAULTS.messageLogs;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
-        ignoreBots:
-          src.ignoreBots === undefined ? true : toBool(src.ignoreBots),
+        ignoreBots: toBool(src.ignoreBots, defaults.ignoreBots),
       };
+    }
 
     case "reactionRoles": {
-      const entries = Array.isArray(src.entries) ? src.entries : [];
+      const defaults = FEATURE_DEFAULTS.reactionRoles;
+      const entries = Array.isArray(src.entries)
+        ? src.entries
+        : defaults.entries;
       const cleaned = [];
       for (const e of entries) {
         if (!e || typeof e !== "object") continue;
@@ -442,102 +393,136 @@ function cleanFeatureValue(name, raw, sanitizeId) {
         if (cleaned.length >= 20) break;
       }
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
         messageId: id(src.messageId),
         entries: cleaned,
       };
     }
 
-    case "autoKick":
+    case "autoKick": {
+      const defaults = FEATURE_DEFAULTS.autoKick;
       return {
-        enabled: toBool(src.enabled),
-        infractionsToKick: toInt(src.infractionsToKick, 5, 1, 100),
+        enabled: toBool(src.enabled, defaults.enabled),
+        infractionsToKick: toInt(
+          src.infractionsToKick,
+          defaults.infractionsToKick,
+          1,
+          100,
+        ),
       };
+    }
 
-    case "levels":
+    case "levels": {
+      const defaults = FEATURE_DEFAULTS.levels;
+      const xpMin = toInt(src.xpMin, defaults.xpMin, 1, 1000);
+      const xpMax = Math.max(xpMin, toInt(src.xpMax, defaults.xpMax, 1, 1000));
       return {
-        enabled: toBool(src.enabled),
-        xpMin: toInt(src.xpMin, 15, 1, 1000),
-        xpMax: toInt(src.xpMax, 25, 1, 1000),
-        cooldownSeconds: toInt(src.cooldownSeconds, 60, 0, 86400),
+        enabled: toBool(src.enabled, defaults.enabled),
+        xpMin,
+        xpMax,
+        cooldownSeconds: toInt(
+          src.cooldownSeconds,
+          defaults.cooldownSeconds,
+          0,
+          86400,
+        ),
         announceChannelId: id(src.announceChannelId),
       };
+    }
 
-    case "starboard":
+    case "starboard": {
+      const defaults = FEATURE_DEFAULTS.starboard;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
-        threshold: toInt(src.threshold, 3, 1, 100),
+        threshold: toInt(src.threshold, defaults.threshold, 1, 100),
         emoji:
           typeof src.emoji === "string" && src.emoji.trim()
             ? src.emoji.trim().slice(0, 64)
-            : "⭐",
+            : defaults.emoji,
       };
+    }
 
-    case "polls":
-      return { enabled: toBool(src.enabled) };
-
-    case "verification":
+    case "polls": {
+      const defaults = FEATURE_DEFAULTS.polls;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
+      };
+    }
+
+    case "verification": {
+      const defaults = FEATURE_DEFAULTS.verification;
+      return {
+        enabled: toBool(src.enabled, defaults.enabled),
         roleId: id(src.roleId),
         channelId: id(src.channelId),
         messageId: id(src.messageId),
-        kickAfterMinutes: toInt(src.kickAfterMinutes, 0, 0, 10080),
+        kickAfterMinutes: toInt(
+          src.kickAfterMinutes,
+          defaults.kickAfterMinutes,
+          0,
+          10080,
+        ),
         title: clampOptionalText(src.title, 120),
         description: clampOptionalText(src.description, 500),
         buttonLabel: clampOptionalText(src.buttonLabel, 80),
       };
+    }
 
-    case "tickets":
+    case "tickets": {
+      const defaults = FEATURE_DEFAULTS.tickets;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
         messageId: id(src.messageId),
         openEmoji:
           typeof src.openEmoji === "string" && src.openEmoji.trim()
             ? src.openEmoji.trim().slice(0, 64)
-            : FEATURE_DEFAULTS.tickets.openEmoji,
+            : defaults.openEmoji,
         closeEmoji:
           typeof src.closeEmoji === "string" && src.closeEmoji.trim()
             ? src.closeEmoji.trim().slice(0, 64)
-            : FEATURE_DEFAULTS.tickets.closeEmoji,
+            : defaults.closeEmoji,
         panelTitle: clampOptionalText(src.panelTitle, 120),
         panelDescription: clampOptionalText(src.panelDescription, 500),
         alreadyOpenMessage: clampOptionalText(src.alreadyOpenMessage, 300),
         welcomeMessage: clampOptionalText(src.welcomeMessage, 1200),
         closeMessage: clampOptionalText(src.closeMessage, 300),
       };
+    }
 
-    case "welcome":
+    case "welcome": {
+      const defaults = FEATURE_DEFAULTS.welcome;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
         message: clampOptionalText(src.message, 500),
-        embed: src.embed === undefined ? true : toBool(src.embed),
-        color: normalizeColor(src.color, FEATURE_DEFAULTS.welcome.color),
+        embed: toBool(src.embed, defaults.embed),
+        color: normalizeColor(src.color, defaults.color),
         bannerUrl: urlOrNull(src.bannerUrl, 512),
       };
+    }
 
-    case "goodbye":
+    case "goodbye": {
+      const defaults = FEATURE_DEFAULTS.goodbye;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
         message: clampOptionalText(src.message, 500),
-        embed: src.embed === undefined ? true : toBool(src.embed),
-        color: normalizeColor(src.color, FEATURE_DEFAULTS.goodbye.color),
+        embed: toBool(src.embed, defaults.embed),
+        color: normalizeColor(src.color, defaults.color),
         bannerUrl: urlOrNull(src.bannerUrl, 512),
       };
+    }
 
-    case "serverStats":
+    case "serverStats": {
+      const defaults = FEATURE_DEFAULTS.serverStats;
       return {
-        enabled: toBool(src.enabled),
-        showMembers:
-          src.showMembers === undefined ? true : toBool(src.showMembers),
-        showJoins: src.showJoins === undefined ? true : toBool(src.showJoins),
-        showLeaves:
-          src.showLeaves === undefined ? true : toBool(src.showLeaves),
+        enabled: toBool(src.enabled, defaults.enabled),
+        showMembers: toBool(src.showMembers, defaults.showMembers),
+        showJoins: toBool(src.showJoins, defaults.showJoins),
+        showLeaves: toBool(src.showLeaves, defaults.showLeaves),
         categoryId: id(src.categoryId),
         memberChannelId: id(src.memberChannelId),
         joinsChannelId: id(src.joinsChannelId),
@@ -546,13 +531,21 @@ function cleanFeatureValue(name, raw, sanitizeId) {
         joinsTemplate: clampOptionalText(src.joinsTemplate, 100),
         leavesTemplate: clampOptionalText(src.leavesTemplate, 100),
       };
+    }
 
-    case "memes":
+    case "memes": {
+      const defaults = FEATURE_DEFAULTS.memes;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         channelId: id(src.channelId),
-        intervalMinutes: toInt(src.intervalMinutes, 60, 15, 1440),
+        intervalMinutes: toInt(
+          src.intervalMinutes,
+          defaults.intervalMinutes,
+          15,
+          1440,
+        ),
       };
+    }
 
     case "twitch": {
       const rawStreamer =
@@ -562,8 +555,9 @@ function cleanFeatureValue(name, raw, sanitizeId) {
       const streamerName = /^[a-z0-9_]{1,25}$/.test(rawStreamer)
         ? rawStreamer
         : null;
+      const defaults = FEATURE_DEFAULTS.twitch;
       return {
-        enabled: toBool(src.enabled),
+        enabled: toBool(src.enabled, defaults.enabled),
         streamerName,
         channelId: id(src.channelId),
         roleId: id(src.roleId),
@@ -643,6 +637,38 @@ function registerFeaturesRoutes({
           keyPrefix: "rl:features:diagnose:",
         })
       : (req, res, next) => next();
+  const featureReadRateLimit =
+    typeof rateLimit === "function"
+      ? rateLimit({
+          windowMs: 60_000,
+          max: 60,
+          keyPrefix: "rl:features:read:",
+        })
+      : (req, res, next) => next();
+  const featureTestRateLimit =
+    typeof rateLimit === "function"
+      ? rateLimit({
+          windowMs: 60_000,
+          max: 5,
+          keyPrefix: "rl:features:test:",
+        })
+      : (req, res, next) => next();
+  const featureSaveRateLimit =
+    typeof rateLimit === "function"
+      ? rateLimit({
+          windowMs: 60_000,
+          max: 20,
+          keyPrefix: "rl:features:save:",
+        })
+      : (req, res, next) => next();
+  const featurePublishRateLimit =
+    typeof rateLimit === "function"
+      ? rateLimit({
+          windowMs: 60_000,
+          max: 5,
+          keyPrefix: "rl:features:publish:",
+        })
+      : (req, res, next) => next();
 
   const premiumGuardBody =
     typeof requirePremium === "function"
@@ -667,7 +693,7 @@ function registerFeaturesRoutes({
     requireDashboardAuth,
     canViewConfig,
     guardGuildQuery,
-    diagnoseRateLimit,
+    featureReadRateLimit,
     async (req, res) => {
       try {
         const guildId = sanitizeId(req.query.guildId || "");
@@ -680,25 +706,23 @@ function registerFeaturesRoutes({
             .status(503)
             .json({ ok: false, error: "GUILD_CONFIG_MODEL_MISSING" });
 
-        let cfg = await GuildConfig.findOne({ guildId }).lean();
-        if (!cfg) {
-          cfg = await GuildConfig.create({ guildId });
-          cfg = cfg.toObject();
-        }
+        const cfg = await GuildConfig.findOne({ guildId }).lean();
 
         const configuredSet = new Set(
-          Array.isArray(cfg.featuresConfigured) ? cfg.featuresConfigured : [],
+          Array.isArray(cfg && cfg.featuresConfigured)
+            ? cfg.featuresConfigured
+            : [],
         );
         const configuredFeatures = Object.keys(FEATURE_DEFAULTS).reduce(
           (configured, name) => {
-            const value = cfg.features && cfg.features[name];
+            const value = cfg && cfg.features && cfg.features[name];
             configured[name] =
               configuredSet.has(name) || hasLegacyFeatureConfig(name, value);
             return configured;
           },
           {},
         );
-        const features = normalizeFeatures(cfg.features);
+        const features = normalizeFeatures(cfg && cfg.features);
         return res.json({ ok: true, features, configuredFeatures });
       } catch (err) {
         console.error("[Dashboard] /api/features GET error:", err);
@@ -712,6 +736,7 @@ function registerFeaturesRoutes({
     requireDashboardAuth,
     canViewConfig,
     guardGuildQuery,
+    diagnoseRateLimit,
     async (req, res) => {
       try {
         const guildId = sanitizeId(req.query.guildId || "");
@@ -763,6 +788,7 @@ function registerFeaturesRoutes({
     canEditConfig,
     guardGuildBody,
     guardPremiumTicketsBody,
+    featureSaveRateLimit,
     async (req, res) => {
       try {
         const guildId = sanitizeId(req.body.guildId || "");
@@ -787,10 +813,32 @@ function registerFeaturesRoutes({
             .json({ ok: false, error: "INVALID_FEATURE_VALUE" });
 
         const client = typeof getClient === "function" ? getClient() : null;
+        const channelField = FEATURE_DIAGNOSTICS[feature]?.channelField;
+        const configuredChannelId = channelField && value[channelField];
+        if (configuredChannelId) {
+          if (!client || !client.channels) {
+            return res
+              .status(503)
+              .json({ ok: false, error: "CLIENT_UNAVAILABLE" });
+          }
+          const configuredChannel = await client.channels
+            .fetch(configuredChannelId)
+            .catch(() => null);
+          if (!isGuildChannel(configuredChannel, guildId)) {
+            return res
+              .status(400)
+              .json({ ok: false, error: "CHANNEL_NOT_IN_GUILD" });
+          }
+        }
 
         // Cargos por reação: os atalhos ":nome:" são resolvidos para "<:nome:id>"
         // antes de persistir (o Discord só aceita o glifo ou o id do emoji).
-        if ((feature === "reactionRoles" || feature === "tickets") && client) {
+        if (
+          (feature === "reactionRoles" ||
+            feature === "tickets" ||
+            feature === "starboard") &&
+          client
+        ) {
           const guild = await client.guilds.fetch(guildId).catch(() => null);
           if (guild) {
             const {
@@ -813,6 +861,16 @@ function registerFeaturesRoutes({
                   ? resolved[1].emoji
                   : value.closeEmoji;
             }
+            if (feature === "starboard") {
+              const resolved = resolveShortcodes(
+                [{ emoji: value.emoji }],
+                guild,
+              );
+              value.emoji =
+                resolved[0] && resolved[0].emoji
+                  ? resolved[0].emoji
+                  : value.emoji;
+            }
           }
         }
 
@@ -828,6 +886,7 @@ function registerFeaturesRoutes({
           returnDocument: "after",
           upsert: true,
         }).lean();
+        invalidateGuildConfig(guildId);
 
         if (typeof recordAudit === "function") {
           await recordAudit({
@@ -841,8 +900,6 @@ function registerFeaturesRoutes({
             payload: { feature, enabled: value.enabled },
           });
         }
-
-        invalidateGuildConfig(guildId);
 
         let outValue = value;
 
@@ -924,6 +981,7 @@ function registerFeaturesRoutes({
     canEditConfig,
     guardGuildBody,
     guardPremiumTicketsParam,
+    featureTestRateLimit,
     async (req, res) => {
       try {
         const guildId = sanitizeId(req.body.guildId || "");
@@ -1035,7 +1093,10 @@ function registerFeaturesRoutes({
       const channel = await client.channels
         .fetch(current.channelId)
         .catch(() => null);
-      if (!channel || typeof channel.send !== "function") {
+      if (
+        !isGuildChannel(channel, guildId) ||
+        typeof channel.send !== "function"
+      ) {
         return res.status(400).json({ ok: false, error: "CHANNEL_NOT_FOUND" });
       }
 
@@ -1117,7 +1178,22 @@ function registerFeaturesRoutes({
         };
       }
 
-      const message = await channel.send(payload);
+      let existingMessage = null;
+      if (
+        current.messageId &&
+        channel.messages &&
+        typeof channel.messages.fetch === "function"
+      ) {
+        try {
+          existingMessage = await channel.messages.fetch(current.messageId);
+        } catch (err) {
+          if (Number(err && err.code) !== 10008) throw err;
+        }
+      }
+      const message =
+        existingMessage && typeof existingMessage.edit === "function"
+          ? await existingMessage.edit(payload)
+          : await channel.send(payload);
 
       if (featureKey === "tickets") {
         const reactable = toReactable(current.openEmoji);
@@ -1156,6 +1232,7 @@ function registerFeaturesRoutes({
     requireDashboardAuth,
     canEditConfig,
     guardGuildBody,
+    featurePublishRateLimit,
     async (req, res) => {
       return publishFeatureMessage(req, res, "verification");
     },
@@ -1169,10 +1246,11 @@ function registerFeaturesRoutes({
     canEditConfig,
     guardGuildBody,
     premiumGuardBody,
+    featurePublishRateLimit,
     async (req, res) => {
       return publishFeatureMessage(req, res, "tickets");
     },
   );
 }
 
-module.exports = { registerFeaturesRoutes, diagnoseFeature };
+module.exports = { registerFeaturesRoutes, diagnoseFeature, cleanFeatureValue };

@@ -5,8 +5,11 @@
 
 const { EmbedBuilder } = require("discord.js");
 const { getFeature } = require("./featuresService");
+const { emojiMatches } = require("./reactionRoles");
+const { isGuildChannel } = require("../utils/guildChannel");
 
 let StarboardEntry = null;
+const publicationQueues = new Map();
 try {
   StarboardEntry = require("../database/models/StarboardEntry");
 } catch (err) {
@@ -16,13 +19,17 @@ try {
   );
 }
 
-// Compara o emoji configurado com o emoji (nome ou id) da reação.
-function matchEmoji(reaction, emoji) {
-  const target = String(emoji || "").trim();
-  if (!target) return false;
-  const name = reaction.emoji?.name || null;
-  const id = reaction.emoji?.id || null;
-  return target === name || target === id;
+function matchEmoji(reaction, configuredEmoji) {
+  return emojiMatches(configuredEmoji, reaction && reaction.emoji);
+}
+
+function serializeByKey(key, operation) {
+  const previous = publicationQueues.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  publicationQueues.set(key, current);
+  return current.finally(() => {
+    if (publicationQueues.get(key) === current) publicationQueues.delete(key);
+  });
 }
 
 // Garante reaction + message completos (podem ser partial).
@@ -82,7 +89,7 @@ async function resolveStarChannel(guild, channelId) {
   const ch =
     guild.channels.cache.get(channelId) ||
     (await guild.channels.fetch(channelId).catch(() => null));
-  if (ch && typeof ch.send === "function") return ch;
+  if (isGuildChannel(ch, guild.id) && typeof ch.send === "function") return ch;
   return null;
 }
 
@@ -139,21 +146,21 @@ async function handleReactionAdd(reaction, user) {
     const ctx = await loadContext(reaction);
     if (!ctx) return;
     const { message, guild } = ctx;
+    await serializeByKey(`${guild.id}:${message.id}`, async () => {
+      const cfg = await getFeature(guild.id, "starboard");
+      if (cfg?.enabled !== true) return;
+      if (!cfg.channelId) return;
+      if (message.channelId === cfg.channelId) return;
+      if (!matchEmoji(reaction, cfg.emoji)) return;
+      if (message.author?.id && user?.id && message.author.id === user.id)
+        return;
 
-    const cfg = await getFeature(guild.id, "starboard");
-    if (cfg?.enabled !== true) return;
-    if (!cfg.channelId) return;
-    // NUNCA fazer starboard do próprio canal do starboard.
-    if (message.channelId === cfg.channelId) return;
-    if (!matchEmoji(reaction, cfg.emoji)) return;
-    // Ignora reações do próprio autor da mensagem.
-    if (message.author?.id && user?.id && message.author.id === user.id) return;
+      const count = Math.max(0, Number(reaction.count) || 0);
+      const threshold = Math.max(1, Number(cfg.threshold) || 1);
+      if (count < threshold) return;
 
-    const count = Math.max(0, Number(reaction.count) || 0);
-    const threshold = Math.max(1, Number(cfg.threshold) || 1);
-    if (count < threshold) return;
-
-    await publishOrUpdate(message, guild, cfg, count);
+      await publishOrUpdate(message, guild, cfg, count);
+    });
   } catch (err) {
     console.error("[starboard] handleReactionAdd error:", err);
   }
@@ -166,57 +173,58 @@ async function handleReactionRemove(reaction, _user) {
     const ctx = await loadContext(reaction);
     if (!ctx) return;
     const { message, guild } = ctx;
+    await serializeByKey(`${guild.id}:${message.id}`, async () => {
+      const cfg = await getFeature(guild.id, "starboard");
+      if (cfg?.enabled !== true) return;
+      if (!cfg.channelId) return;
+      if (message.channelId === cfg.channelId) return;
+      if (!matchEmoji(reaction, cfg.emoji)) return;
 
-    const cfg = await getFeature(guild.id, "starboard");
-    if (cfg?.enabled !== true) return;
-    if (!cfg.channelId) return;
-    if (message.channelId === cfg.channelId) return;
-    if (!matchEmoji(reaction, cfg.emoji)) return;
+      const entry = await StarboardEntry.findOne({
+        guildId: guild.id,
+        sourceMessageId: message.id,
+      })
+        .lean()
+        .catch(() => null);
+      if (!entry) return;
 
-    const entry = await StarboardEntry.findOne({
-      guildId: guild.id,
-      sourceMessageId: message.id,
-    })
-      .lean()
-      .catch(() => null);
-    if (!entry) return;
+      const count = Math.max(0, Number(reaction.count) || 0);
+      const threshold = Math.max(1, Number(cfg.threshold) || 1);
 
-    const count = Math.max(0, Number(reaction.count) || 0);
-    const threshold = Math.max(1, Number(cfg.threshold) || 1);
+      // Abaixo do limite: apaga a mensagem do starboard e a entrada.
+      if (count < threshold) {
+        const starChannel = await resolveStarChannel(guild, cfg.channelId);
+        if (starChannel && entry.starboardMessageId) {
+          const existing = await starChannel.messages
+            .fetch(entry.starboardMessageId)
+            .catch(() => null);
+          if (existing) await existing.delete().catch(() => null);
+        }
+        await StarboardEntry.deleteOne({ _id: entry._id }).catch(() => null);
+        return;
+      }
 
-    // Abaixo do limite: apaga a mensagem do starboard e a entrada.
-    if (count < threshold) {
+      // Atualiza a contagem na entrada (e na mensagem, se existir).
+      await StarboardEntry.updateOne(
+        { _id: entry._id },
+        { $set: { count } },
+      ).catch(() => null);
+
       const starChannel = await resolveStarChannel(guild, cfg.channelId);
       if (starChannel && entry.starboardMessageId) {
         const existing = await starChannel.messages
           .fetch(entry.starboardMessageId)
           .catch(() => null);
-        if (existing) await existing.delete().catch(() => null);
+        if (existing) {
+          await existing
+            .edit({
+              content: `${cfg.emoji} **${count}** <#${message.channelId}>`,
+              embeds: [buildEmbed(message, guild, count)],
+            })
+            .catch(() => null);
+        }
       }
-      await StarboardEntry.deleteOne({ _id: entry._id }).catch(() => null);
-      return;
-    }
-
-    // Atualiza a contagem na entrada (e na mensagem, se existir).
-    await StarboardEntry.updateOne(
-      { _id: entry._id },
-      { $set: { count } },
-    ).catch(() => null);
-
-    const starChannel = await resolveStarChannel(guild, cfg.channelId);
-    if (starChannel && entry.starboardMessageId) {
-      const existing = await starChannel.messages
-        .fetch(entry.starboardMessageId)
-        .catch(() => null);
-      if (existing) {
-        await existing
-          .edit({
-            content: `${cfg.emoji} **${count}** <#${message.channelId}>`,
-            embeds: [buildEmbed(message, guild, count)],
-          })
-          .catch(() => null);
-      }
-    }
+    });
   } catch (err) {
     console.error("[starboard] handleReactionRemove error:", err);
   }
@@ -225,4 +233,6 @@ async function handleReactionRemove(reaction, _user) {
 module.exports = {
   handleReactionAdd,
   handleReactionRemove,
+  matchEmoji,
+  _internals: { serializeByKey },
 };
