@@ -62,6 +62,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
   switch (feature) {
     case "welcome":
     case "goodbye": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const lang = await getGuildLang(guild.id);
@@ -88,6 +89,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "memes": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const { sendMeme } = require("./memes");
@@ -96,6 +98,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "twitch": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       if (!c.streamerName)
@@ -113,6 +116,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "messageLogs": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const embed = new EmbedBuilder()
@@ -124,6 +128,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "reactionRoles": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const entries = Array.isArray(c.entries) ? c.entries : [];
@@ -169,6 +174,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "levels": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.announceChannelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       await channel.send({
@@ -178,6 +184,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "starboard": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const embed = new EmbedBuilder()
@@ -188,6 +195,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "verification": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel || !c.roleId)
         return { ok: false, error: "CHANNEL_ROLE_REQUIRED" };
@@ -226,6 +234,7 @@ async function runFeatureTest({ client, guild, feature, config, testMessage }) {
     }
 
     case "tickets": {
+      if (!guild || !guild.id) return { ok: false, error: "GUILD_REQUIRED" };
       const channel = await fetchSendable(client, guild, c.channelId);
       if (!channel) return { ok: false, error: "CHANNEL_REQUIRED" };
       const lang = await getGuildLang(guild.id);

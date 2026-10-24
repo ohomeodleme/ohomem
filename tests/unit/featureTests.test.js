@@ -128,6 +128,22 @@ test("autoModeration simulation reports when the draft is disabled", async () =>
   eq(result.data.word, null);
 });
 
+test("missing guild context is rejected before feature preview sends", async () => {
+  const result = await runFeatureTest({
+    feature: "welcome",
+    config: { enabled: true, channelId: "channel-1" },
+    guild: null,
+    client: {
+      channels: {
+        fetch: async () => ({ guildId: "guild-1", send: async () => {} }),
+      },
+    },
+  });
+
+  eq(result.ok, false);
+  eq(result.error, "GUILD_REQUIRED");
+});
+
 test("poll feature test reports that no test action is available", async () => {
   const result = await runFeatureTest({ feature: "polls" });
 
