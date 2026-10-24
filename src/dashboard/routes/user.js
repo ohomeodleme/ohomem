@@ -3,6 +3,7 @@
 const { sendServerError } = require("./_errors");
 const rateLimit = require("../../systems/rateLimit");
 const { getGuild } = require("../../services/guildService");
+const { getEffectiveMaxWarnings } = require("../../utils/trust");
 
 /**
  * User inspector route used by the dashboard Users tab right panel.
@@ -103,34 +104,38 @@ function registerUserRoutes({
           await require("../../utils/trust").getGuildTrustConfig(guildId);
         const autoMuteCfg =
           (config.automation && config.automation.autoMute) || {};
+        const trustValue =
+          typeof dbUser?.trust === "number" ? dbUser.trust : trustCfg.base;
 
         let trustLabel = null;
         let nextPenalty = null;
 
-        if (dbUser && trustCfg && trustCfg.enabled !== false) {
-          const trustValue =
-            typeof dbUser.trust === "number" ? dbUser.trust : trustCfg.base;
-
+        if (dbUser) {
           try {
-            trustLabel = getTrustLabel(trustValue, trustCfg);
+            if (trustCfg && trustCfg.enabled !== false) {
+              trustLabel = getTrustLabel(trustValue, trustCfg);
+            }
           } catch {
             trustLabel = null;
           }
 
           try {
             const warnsCount =
-              counts && typeof counts.WARN === "number" ? counts.WARN : 0;
-            const warnsToMute =
-              typeof autoMuteCfg.warnsToMute === "number"
-                ? autoMuteCfg.warnsToMute
-                : 0;
+              typeof dbUser.warnings === "number" ? dbUser.warnings : 0;
+            const baseMaxWarnings =
+              typeof config.maxWarnings === "number" ? config.maxWarnings : 3;
+            const warnsToMute = getEffectiveMaxWarnings(
+              baseMaxWarnings,
+              trustCfg,
+              trustValue,
+            );
             const baseMuteMs =
               typeof autoMuteCfg.muteDurationMs === "number"
                 ? autoMuteCfg.muteDurationMs
                 : 10 * 60 * 1000;
 
             if (
-              autoMuteCfg &&
+              config.automation?.autoMute &&
               autoMuteCfg.enabled !== false &&
               warnsToMute > 0
             ) {

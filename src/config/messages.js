@@ -193,7 +193,7 @@ Warnings: **${warnings}/${maxWarnings}**`,
       accountDates: ({ createdAt, joinedAt }) =>
         `Created at: ${createdAt}\nJoined this server: ${joinedAt}`,
       warningsBlock: ({ warnings, maxWarnings, infractionsCount }) =>
-        `**${warnings}** / **${maxWarnings}** (AutoMod base)\nInfractions registered: **${infractionsCount}**`,
+        `**${warnings}** / **${maxWarnings}** (effective limit)\nInfractions registered: **${infractionsCount}**`,
       trustDisabled: "Trust system is currently **disabled**.",
       trustStaff: ({ trustValue, trustMax, trustLabel }) =>
         `Trust: **${trustValue}/${trustMax}**\nRisk level: **${trustLabel}**`,
@@ -559,7 +559,7 @@ Avisos: **${warnings}/${maxWarnings}**`,
       accountDates: ({ createdAt, joinedAt }) =>
         `Criada em: ${createdAt}\nEntrou no servidor: ${joinedAt}`,
       warningsBlock: ({ warnings, maxWarnings, infractionsCount }) =>
-        `**${warnings}** / **${maxWarnings}** (base do AutoMod)\nInfrações registadas: **${infractionsCount}**`,
+        `**${warnings}** / **${maxWarnings}** (limite efetivo)\nInfrações registadas: **${infractionsCount}**`,
       trustDisabled: "O sistema de trust está **desativado**.",
       trustStaff: ({ trustValue, trustMax, trustLabel }) =>
         `Trust: **${trustValue}/${trustMax}**\nNível de risco: **${trustLabel}**`,

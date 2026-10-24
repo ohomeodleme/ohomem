@@ -8,7 +8,11 @@ const Infraction = require("../database/models/Infraction");
 const logger = require("../systems/logger");
 const { tContext, getGuildLang } = require("../systems/i18n");
 const { isStaff } = require("./utils");
-const { getGuildTrustConfig, getTrustLabel } = require("../utils/trust");
+const {
+  getGuildTrustConfig,
+  getTrustLabel,
+  getEffectiveMaxWarnings,
+} = require("../utils/trust");
 const { replyEphemeral, safeReply } = require("../utils/discord");
 
 function truncate(str, fallback, max = 90) {
@@ -91,6 +95,13 @@ module.exports = async function userinfoSlash(client, interaction) {
     const trustValue = Number.isFinite(dbUser?.trust)
       ? dbUser.trust
       : trustCfg.base;
+    const baseMaxWarnings =
+      typeof config.maxWarnings === "number" ? config.maxWarnings : 3;
+    const effectiveMaxWarnings = getEffectiveMaxWarnings(
+      baseMaxWarnings,
+      trustCfg,
+      trustValue,
+    );
     const trustLabel = getTrustLabel(trustValue, trustCfg, lang);
 
     let infractionsCount = 0;
@@ -175,7 +186,7 @@ module.exports = async function userinfoSlash(client, interaction) {
           name: await tContext(interaction, "userinfo.fieldWarnings"),
           value: await tContext(interaction, "userinfo.warningsBlock", {
             warnings,
-            maxWarnings: config.maxWarnings ?? 3,
+            maxWarnings: effectiveMaxWarnings,
             infractionsCount,
           }),
           inline: false,
@@ -210,7 +221,7 @@ module.exports = async function userinfoSlash(client, interaction) {
         tag: user.tag,
         id: user.id,
         warnings,
-        maxWarnings: config.maxWarnings ?? 3,
+        maxWarnings: effectiveMaxWarnings,
         infractionsCount,
         trust: trustCfg.enabled ? `${trustValue}/${trustCfg.max}` : "N/A",
         riskLabel: trustCfg.enabled ? trustLabel : "N/A",

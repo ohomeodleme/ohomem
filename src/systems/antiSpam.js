@@ -6,6 +6,7 @@
 
 const { PermissionsBitField } = require("discord.js");
 
+const config = require("../config/defaultConfig");
 const infractionsService = require("./infractionsService");
 const logger = require("./logger");
 const warningsService = require("./warningsService");
@@ -13,6 +14,7 @@ const { tContext } = require("./i18n");
 const { fetchMember } = require("../services/discordFetchCache");
 const {
   getGuildTrustConfig,
+  getEffectiveMaxWarnings,
   getEffectiveMaxMessages,
   getEffectiveMuteDuration,
 } = require("../utils/trust");
@@ -385,11 +387,16 @@ async function antiSpam(message, client) {
 
       if (publicNotify) {
         try {
+          const maxWarnings = getEffectiveMaxWarnings(
+            typeof config.maxWarnings === "number" ? config.maxWarnings : 3,
+            trustCfg,
+            Number.isFinite(dbUser?.trust) ? dbUser.trust : trustValue,
+          );
           const warnMsg =
             (await tContext(message, "antispam.warnPublic", {
               userMention: `${message.author}`,
               warnings: dbUser?.warnings ?? "N/A",
-              maxWarnings: effectiveMaxMsgs,
+              maxWarnings,
             })) || `${message.author} recebeu um aviso automático por spam.`;
           await message.channel.send(warnMsg);
         } catch {
@@ -440,6 +447,7 @@ async function antiSpam(message, client) {
       );
     } catch (e) {
       console.error("[antiSpam] Failed to apply timeout:", e);
+      return;
     }
 
     let dbUserAfterMute = null;

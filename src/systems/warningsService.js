@@ -127,6 +127,7 @@ async function applyMutePenalty(guildId, userId) {
 
   const before = u.trust;
   applyTrustPenalty(u, trustCfg, "MUTE", now);
+  u.warnings = 0;
   recordTrustChange(u, "mute", before, now);
 
   await u.save();
@@ -154,13 +155,6 @@ async function resetUser(guildId, userId, baseTrust, reason) {
   u.trust = clampTrust(nextTrust, minTrust, maxTrust);
   recordTrustChange(u, reason ? String(reason) : "reset", before, new Date());
 
-  await u.save();
-  return u;
-}
-
-async function resetWarnings(guildId, userId) {
-  const u = await getOrCreateUser(guildId, userId);
-  u.warnings = 0;
   await u.save();
   return u;
 }
@@ -285,7 +279,6 @@ function clearAvgTrustCache(guildId) {
 module.exports = {
   getOrCreateUser,
   addWarning,
-  resetWarnings,
   applyMutePenalty,
   resetUser,
   removeInfractionEffects,

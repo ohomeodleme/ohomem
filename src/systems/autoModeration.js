@@ -400,10 +400,6 @@ module.exports = async function autoModeration(message, client) {
     try {
       incrementAutoModActions();
     } catch {}
-
-    await warningsService
-      .resetWarnings(guild.id, message.author.id)
-      .catch(() => null);
   } catch (err) {
     console.error("[AutoMod] Critical error:", err);
   } finally {
